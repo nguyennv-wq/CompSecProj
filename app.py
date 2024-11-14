@@ -6,10 +6,12 @@ users = {
     "Jonathan": {"password": "Purdue1", "role": "ADMIN", "funds": 10000000000},
     "Bav": {"password": "1upu1", "role": "ADMIN", "funds": 1000000000},
     "Nathan": {"password": "PJ3VF4TA4TUHM", "role": "ADMIN", "funds": 1000000000},
-    "Santiago": {"password": "AlphaC00l!", "role": "USER", "funds": 500},
+    "admin": {"password": "Spookytus", "role": "ADMIN", "funds": 500},
     "Sueve": {"password": "WillIAm", "role": "USER", "funds": 12392},
     "Sudo": {"password": "ZaZa", "role": "USER", "funds": 30023},
-    "Ubuntu": {"password": "ABC", "role": "USER", "funds": 5002}
+    "Ubuntu": {"password": "ABC", "role": "USER", "funds": 5002},
+    "Steve": {"password": "1234", "role": "TELLER", "funds": 252525},
+    "SpongBob": {"password": "Bubbles", "role": "TELLER", "funds": 500500200},
 }
 
 # Stores the logged-in clients
@@ -17,9 +19,9 @@ logged_in_users = {}
 
 # Permission levels for each role
 permissions = {
-    "USER": ["BALANCE", "SEND", "REQUEST", "APPROVE"],
-    "TELLER": ["BALANCE", "SEND", "REQUEST", "APPROVE", "DEPOSIT", "WITHDRAW", "ENROLL"],
-    "ADMIN": ["BALANCE", "SEND", "REQUEST", "APPROVE", "DEPOSIT", "WITHDRAW", "ENROLL", "PROMOTE", "DEMOTE"]
+    "USER": ["BALANCE", "SEND", "REQUEST","APPROVE"],
+    "TELLER": ["BALANCE", "DEPOSIT", "WITHDRAW","APPROVE","ENROLL"],
+    "ADMIN": ["BALANCE", "SEND", "REQUEST", "DEPOSIT", "WITHDRAW", "ENROLL", "PROMOTE", "DEMOTE","APPROVE"]
 }
 
 # Command handlers
@@ -34,8 +36,6 @@ def handle_command(command, client_socket, username):
         return handle_send(command, username)
     elif command.startswith("REQUEST"):
         return handle_request(command, username)
-    elif command.startswith("APPROVE"):
-        return handle_approve(command, username)
     elif command.startswith("DEPOSIT"):
         return handle_deposit(command, username)
     elif command.startswith("WITHDRAW"):
@@ -46,6 +46,8 @@ def handle_command(command, client_socket, username):
         return handle_promote(command, username)
     elif command.startswith("DEMOTE"):
         return handle_demote(command, username)
+    elif command.startswith("APPROVE"):
+        return handle_approve(command, username)
     else:
         return "Invalid command. Try again.\n"
 
@@ -61,7 +63,10 @@ def handle_login(command, client_socket, username):
     login_user, password = parts[1], parts[2]
     if login_user in users and users[login_user]["password"] == password:
         logged_in_users[username] = login_user
-        return f"Login successful. Welcome {login_user}!\n"
+        user_role = users[login_user]["role"]
+        available_commands = "\n".join(permissions[user_role])
+        return (f"Login successful. Welcome {login_user}! You have {user_role} privileges. "
+                f"Available commands:\n{available_commands}\n")
     else:
         return "Invalid username or password.\n"
 
@@ -80,28 +85,106 @@ def handle_logout(client_socket, username):
         return "You are not logged in.\n"
 
 def handle_send(command, username):
-    # Implementation for sending funds
-    return "SEND command executed.\n"
+    # Check if user has permission
+    if not has_permission(username, "SEND"):
+        return "FAIL: Unauthorized action.\n"
+
+    # Parse command
+    parts = command.split()
+    if len(parts) != 3:
+        return "Usage: SEND <recipient_username> <amount>\n"
+    
+    recipient_username = parts[1]
+    try:
+        amount = float(parts[2])
+        if amount <= 0:
+            return "FAIL: Amount must be positive.\n"
+    except ValueError:
+        return "FAIL: Invalid amount format.\n"
+
+    # Get sender from `users` dictionary using the logged-in username
+    sender_username = logged_in_users.get(username)
+    sender = users.get(sender_username)
+
+    if not sender:
+        return "FAIL: Sender not logged in.\n"
+    
+    # Check if sender has enough funds
+    if sender["funds"] < amount:
+        return "FAIL: Insufficient funds.\n"
+
+    # Check if recipient exists
+    recipient = users.get(recipient_username)
+    if not recipient:
+        return f"FAIL: User {recipient_username} does not exist.\n"
+    
+    # Update balances for both sender and recipient
+    users[sender_username]["funds"] -= amount  # Deduct from sender
+    users[recipient_username]["funds"] += amount  # Add to recipient
+
+    return (f"Success! ${amount} sent to {recipient_username}. "
+            f"Your new balance is ${users[sender_username]['funds']}.\n")
+
+
+# Dictionary to store pending requests in the format:
+# { "recipient_username": [("requester_username", amount), ...] }
+pending_requests = {}
 
 def handle_request(command, username):
-    # Implementation for requesting funds
-    return "REQUEST command executed.\n"
+    # Parse command
+    parts = command.split()
+    if len(parts) != 3:
+        return "Usage: REQUEST <recipient_username> <amount>\n"
+    
+    recipient_username = parts[1]
+    try:
+        amount = float(parts[2])
+        if amount <= 0:
+            return "FAIL: Amount must be positive.\n"
+    except ValueError:
+        return "FAIL: Invalid amount format.\n"
 
-def handle_approve(command, username):
-    # Implementation for approving a transaction
-    return "APPROVE command executed.\n"
+    # Check if recipient exists
+    if recipient_username not in users:
+        return f"FAIL: User {recipient_username} does not exist.\n"
+
+    # Add request to pending_requests under the recipient's username
+    if recipient_username not in pending_requests:
+        pending_requests[recipient_username] = []
+    
+    # Add the request (requester, amount) to the recipient's list
+    pending_requests[recipient_username].append((logged_in_users[username], amount))
+    
+    # Debugging: Print the pending requests
+    print(f"Pending requests after {username}'s request: {pending_requests}")
+
+    return (f"Request for ${amount} sent to {recipient_username}. "
+            f"Waiting for approval.\n")
+
 
 def handle_deposit(command, username):
     if not has_permission(username, "DEPOSIT"):
         return "FAIL: Unauthorized action.\n"
-    # Implement deposit functionality here
-    return "DEPOSIT command executed.\n"
+    parts = command.split()
+    if len(parts) != 2:
+        return "Usage: DEPOSIT <amount>\n"
+    amount = float(parts[1])
+    user = users[logged_in_users[username]]
+    user["funds"] += amount
+    return f"Deposited ${amount}. New balance: ${user['funds']}.\n"
 
 def handle_withdraw(command, username):
     if not has_permission(username, "WITHDRAW"):
         return "FAIL: Unauthorized action.\n"
-    # Implement withdraw functionality here
-    return "WITHDRAW command executed.\n"
+    parts = command.split()
+    if len(parts) != 2:
+        return "Usage: WITHDRAW <amount>\n"
+    amount = float(parts[1])
+    user = users[logged_in_users[username]]
+    if amount > user["funds"]:
+        return "Insufficient funds.\n"
+    user["funds"] -= amount
+    return f"Withdrew ${amount}. New balance: ${user['funds']}.\n"
 
 def handle_enroll(command, username):
     if not has_permission(username, "ENROLL"):
@@ -109,11 +192,9 @@ def handle_enroll(command, username):
     parts = command.split()
     if len(parts) != 3:
         return "Usage: ENROLL <new_username> <password>\n"
-    
     new_username, password = parts[1], parts[2]
     if new_username in users:
         return "FAIL: User already exists.\n"
-    
     users[new_username] = {"password": password, "role": "USER", "funds": 0}
     return f"User {new_username} enrolled successfully.\n"
 
@@ -123,11 +204,9 @@ def handle_promote(command, username):
     parts = command.split()
     if len(parts) != 2:
         return "Usage: PROMOTE <username>\n"
-    
     target_user = parts[1]
     if target_user not in users:
         return "FAIL: User does not exist.\n"
-    
     current_role = users[target_user]["role"]
     if current_role == "USER":
         users[target_user]["role"] = "TELLER"
@@ -135,7 +214,6 @@ def handle_promote(command, username):
         users[target_user]["role"] = "ADMIN"
     else:
         return "FAIL: User is already an ADMIN.\n"
-    
     return f"{target_user} promoted to {users[target_user]['role']}.\n"
 
 def handle_demote(command, username):
@@ -144,11 +222,9 @@ def handle_demote(command, username):
     parts = command.split()
     if len(parts) != 2:
         return "Usage: DEMOTE <username>\n"
-    
     target_user = parts[1]
     if target_user not in users:
         return "FAIL: User does not exist.\n"
-    
     current_role = users[target_user]["role"]
     if current_role == "ADMIN":
         users[target_user]["role"] = "TELLER"
@@ -156,12 +232,58 @@ def handle_demote(command, username):
         users[target_user]["role"] = "USER"
     else:
         return "FAIL: User is already a USER.\n"
-    
     return f"{target_user} demoted to {users[target_user]['role']}.\n"
+
+def handle_approve(command, username):
+    # Parse command
+    parts = command.split()
+    if len(parts) != 3:
+        return "Usage: APPROVE <requester_username> <amount>\n"
+    
+    requester_username = parts[1]
+    try:
+        amount = float(parts[2])
+    except ValueError:
+        return "FAIL: Invalid amount format.\n"
+    
+    # Ensure the current user is the recipient of the request (who should approve it)
+    recipient_username = logged_in_users.get(username)
+    
+    if recipient_username not in pending_requests:
+        return "FAIL: No pending requests.\n"
+    
+    # Debugging: Show what the recipient has in pending requests
+    print(f"Pending requests for {recipient_username}: {pending_requests[recipient_username]}")
+
+    # Find the pending request matching the requester and amount
+    requests = pending_requests[recipient_username]
+    for i, (requester, requested_amount) in enumerate(requests):
+        if requester == requester_username and requested_amount == amount:
+            # Check if the recipient has enough funds to approve the request
+            if users[recipient_username]["funds"] < amount:
+                return "FAIL: Insufficient funds to approve this request.\n"
+            
+            # Process the transaction
+            users[recipient_username]["funds"] -= amount
+            users[requester]["funds"] += amount
+            
+            # Remove the approved request
+            del requests[i]
+            if not requests:  # If no more requests, remove the entry for this recipient
+                del pending_requests[recipient_username]
+            
+            # Debugging: Show updated pending requests
+            print(f"Updated pending requests: {pending_requests}")
+            
+            return (f"Request approved! ${amount} sent to {requester_username}. "
+                    f"Your new balance is ${users[recipient_username]['funds']}.\n")
+    
+    return "FAIL: No matching request found.\n"
+
 
 def handle_client(client_socket, addr):
     username = addr[0]
-    client_socket.send("Welcome to AlphaBank. Please log in.\n".encode())
+    client_socket.send("Welcome to AlphaBank. Please type LOGIN to log in! \n".encode())
     
     while True:
         data = client_socket.recv(1024)
