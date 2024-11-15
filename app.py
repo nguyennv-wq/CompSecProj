@@ -1,17 +1,19 @@
 import socket
 import threading
+import hashlib
+import os
 
 # User data and roles
 users = {
-    "Jonathan": {"password": "Purdue1", "role": "ADMIN", "funds": 10000000000},
-    "Bav": {"password": "1upu1", "role": "ADMIN", "funds": 1000000000},
-    "Nathan": {"password": "PJ3VF4TA4TUHM", "role": "ADMIN", "funds": 1000000000},
-    "admin": {"password": "Spookytus", "role": "ADMIN", "funds": 500},
-    "Sueve": {"password": "WillIAm", "role": "USER", "funds": 12392},
-    "Sudo": {"password": "ZaZa", "role": "USER", "funds": 30023},
-    "Ubuntu": {"password": "ABC", "role": "USER", "funds": 5002},
-    "Steve": {"password": "1234", "role": "TELLER", "funds": 252525},
-    "SpongBob": {"password": "Bubbles", "role": "TELLER", "funds": 500500200},
+    "Jonathan": {"password_hash": "", "role": "ADMIN", "funds": 10000000000},
+    "Bav": {"password_hash": "", "role": "ADMIN", "funds": 1000000000},
+    "Nathan": {"password_hash": "", "role": "ADMIN", "funds": 1000000000},
+    "admin": {"password_hash": "", "role": "ADMIN", "funds": 500},
+    "Sueve": {"password_hash": "", "role": "USER", "funds": 12392},
+    "Sudo": {"password_hash": "", "role": "USER", "funds": 30023},
+    "Ubuntu": {"password_hash": "", "role": "USER", "funds": 5002},
+    "Steve": {"password_hash": "", "role": "TELLER", "funds": 252525},
+    "SpongBob": {"password_hash": "", "role": "TELLER", "funds": 500500200},
 }
 
 # Stores the logged-in clients
@@ -19,10 +21,29 @@ logged_in_users = {}
 
 # Permission levels for each role
 permissions = {
-    "USER": ["BALANCE", "SEND", "REQUEST","APPROVE"],
-    "TELLER": ["BALANCE", "DEPOSIT", "WITHDRAW","APPROVE","ENROLL"],
-    "ADMIN": ["BALANCE", "SEND", "REQUEST", "DEPOSIT", "WITHDRAW", "ENROLL", "PROMOTE", "DEMOTE","APPROVE"]
+    "USER": ["BALANCE", "SEND", "REQUEST", "APPROVE"],
+    "TELLER": ["BALANCE", "DEPOSIT", "WITHDRAW", "APPROVE", "ENROLL"],
+    "ADMIN": ["BALANCE", "SEND", "REQUEST", "DEPOSIT", "WITHDRAW", "ENROLL", "PROMOTE", "DEMOTE", "APPROVE"]
 }
+
+# Function to hash a password with a salt
+def hash_password(password):
+    salt = os.urandom(16)  # Generate a 16-byte random salt
+    hashed_pw = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000)
+    return salt + hashed_pw  # Return salt + hashed password
+
+# Function to verify a password against the stored hash
+def verify_password(stored_hash, password):
+    salt = stored_hash[:16]  # Extract the salt (first 16 bytes)
+    stored_pw = stored_hash[16:]  # Extract the stored password hash (remaining bytes)
+    hashed_pw = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000)
+    return hashed_pw == stored_pw
+
+# Initialize users' passwords with hashes and salts
+for user in users:
+    if user not in ["Jonathan", "Bav", "Nathan", "admin", "Sueve", "Sudo", "Ubuntu", "Steve", "SpongBob"]:
+        continue  # Skip users who already have their hashes set in the dictionary
+    users[user]["password_hash"] = hash_password(users[user]["password"])
 
 # Command handlers
 def handle_command(command, client_socket, username):
@@ -61,7 +82,7 @@ def handle_login(command, client_socket, username):
         return "Usage: LOGIN <username> <password>\n"
     
     login_user, password = parts[1], parts[2]
-    if login_user in users and users[login_user]["password"] == password:
+    if login_user in users and verify_password(users[login_user]["password_hash"], password):
         logged_in_users[username] = login_user
         user_role = users[login_user]["role"]
         available_commands = "\n".join(permissions[user_role])
@@ -85,11 +106,8 @@ def handle_logout(client_socket, username):
         return "You are not logged in.\n"
 
 def handle_send(command, username):
-    # Check if user has permission
     if not has_permission(username, "SEND"):
         return "FAIL: Unauthorized action.\n"
-
-    # Parse command
     parts = command.split()
     if len(parts) != 3:
         return "Usage: SEND <recipient_username> <amount>\n"
@@ -101,37 +119,29 @@ def handle_send(command, username):
             return "FAIL: Amount must be positive.\n"
     except ValueError:
         return "FAIL: Invalid amount format.\n"
-
-    # Get sender from `users` dictionary using the logged-in username
+    
     sender_username = logged_in_users.get(username)
     sender = users.get(sender_username)
 
     if not sender:
         return "FAIL: Sender not logged in.\n"
     
-    # Check if sender has enough funds
     if sender["funds"] < amount:
         return "FAIL: Insufficient funds.\n"
-
-    # Check if recipient exists
+    
     recipient = users.get(recipient_username)
     if not recipient:
         return f"FAIL: User {recipient_username} does not exist.\n"
     
-    # Update balances for both sender and recipient
-    users[sender_username]["funds"] -= amount  # Deduct from sender
-    users[recipient_username]["funds"] += amount  # Add to recipient
+    users[sender_username]["funds"] -= amount
+    users[recipient_username]["funds"] += amount
 
     return (f"Success! ${amount} sent to {recipient_username}. "
             f"Your new balance is ${users[sender_username]['funds']}.\n")
 
-
-# Dictionary to store pending requests in the format:
-# { "recipient_username": [("requester_username", amount), ...] }
 pending_requests = {}
 
 def handle_request(command, username):
-    # Parse command
     parts = command.split()
     if len(parts) != 3:
         return "Usage: REQUEST <recipient_username> <amount>\n"
@@ -144,23 +154,14 @@ def handle_request(command, username):
     except ValueError:
         return "FAIL: Invalid amount format.\n"
 
-    # Check if recipient exists
     if recipient_username not in users:
         return f"FAIL: User {recipient_username} does not exist.\n"
 
-    # Add request to pending_requests under the recipient's username
     if recipient_username not in pending_requests:
         pending_requests[recipient_username] = []
     
-    # Add the request (requester, amount) to the recipient's list
     pending_requests[recipient_username].append((logged_in_users[username], amount))
-    
-    # Debugging: Print the pending requests
-    print(f"Pending requests after {username}'s request: {pending_requests}")
-
-    return (f"Request for ${amount} sent to {recipient_username}. "
-            f"Waiting for approval.\n")
-
+    return f"Request for ${amount} sent to {recipient_username}. Waiting for approval.\n"
 
 def handle_deposit(command, username):
     if not has_permission(username, "DEPOSIT"):
@@ -195,7 +196,7 @@ def handle_enroll(command, username):
     new_username, password = parts[1], parts[2]
     if new_username in users:
         return "FAIL: User already exists.\n"
-    users[new_username] = {"password": password, "role": "USER", "funds": 0}
+    users[new_username] = {"password_hash": hash_password(password), "role": "USER", "funds": 0}
     return f"User {new_username} enrolled successfully.\n"
 
 def handle_promote(command, username):
@@ -208,13 +209,10 @@ def handle_promote(command, username):
     if target_user not in users:
         return "FAIL: User does not exist.\n"
     current_role = users[target_user]["role"]
-    if current_role == "USER":
-        users[target_user]["role"] = "TELLER"
-    elif current_role == "TELLER":
-        users[target_user]["role"] = "ADMIN"
-    else:
-        return "FAIL: User is already an ADMIN.\n"
-    return f"{target_user} promoted to {users[target_user]['role']}.\n"
+    if current_role == "ADMIN":
+        return "FAIL: Cannot promote an ADMIN user.\n"
+    users[target_user]["role"] = "TELLER" if current_role == "USER" else "ADMIN"
+    return f"{target_user} has been promoted to {users[target_user]['role']}.\n"
 
 def handle_demote(command, username):
     if not has_permission(username, "DEMOTE"):
@@ -226,84 +224,68 @@ def handle_demote(command, username):
     if target_user not in users:
         return "FAIL: User does not exist.\n"
     current_role = users[target_user]["role"]
-    if current_role == "ADMIN":
-        users[target_user]["role"] = "TELLER"
-    elif current_role == "TELLER":
-        users[target_user]["role"] = "USER"
-    else:
-        return "FAIL: User is already a USER.\n"
-    return f"{target_user} demoted to {users[target_user]['role']}.\n"
+    if current_role == "USER":
+        return "FAIL: Cannot demote a USER.\n"
+    users[target_user]["role"] = "USER"
+    return f"{target_user} has been demoted to USER.\n"
 
 def handle_approve(command, username):
-    # Parse command
+    if not has_permission(username, "APPROVE"):
+        return "FAIL: Unauthorized action.\n"
     parts = command.split()
     if len(parts) != 3:
         return "Usage: APPROVE <requester_username> <amount>\n"
-    
     requester_username = parts[1]
-    try:
-        amount = float(parts[2])
-    except ValueError:
-        return "FAIL: Invalid amount format.\n"
-    
-    # Ensure the current user is the recipient of the request (who should approve it)
-    recipient_username = logged_in_users.get(username)
-    
-    if recipient_username not in pending_requests:
-        return "FAIL: No pending requests.\n"
-    
-    # Debugging: Show what the recipient has in pending requests
-    print(f"Pending requests for {recipient_username}: {pending_requests[recipient_username]}")
-
-    # Find the pending request matching the requester and amount
-    requests = pending_requests[recipient_username]
-    for i, (requester, requested_amount) in enumerate(requests):
-        if requester == requester_username and requested_amount == amount:
-            # Check if the recipient has enough funds to approve the request
-            if users[recipient_username]["funds"] < amount:
-                return "FAIL: Insufficient funds to approve this request.\n"
-            
-            # Process the transaction
-            users[recipient_username]["funds"] -= amount
-            users[requester]["funds"] += amount
-            
-            # Remove the approved request
-            del requests[i]
-            if not requests:  # If no more requests, remove the entry for this recipient
-                del pending_requests[recipient_username]
-            
-            # Debugging: Show updated pending requests
-            print(f"Updated pending requests: {pending_requests}")
-            
-            return (f"Request approved! ${amount} sent to {requester_username}. "
-                    f"Your new balance is ${users[recipient_username]['funds']}.\n")
-    
-    return "FAIL: No matching request found.\n"
-
+    amount = float(parts[2])
+    if requester_username not in pending_requests:
+        return f"No requests from {requester_username}.\n"
+    for request in pending_requests[requester_username]:
+        if request[0] == logged_in_users[username]:
+            user = users[request[0]]
+            user["funds"] += amount
+            return f"Request for ${amount} from {requester_username} has been approved.\n"
+    return "Request not found.\n"
 
 def handle_client(client_socket, addr):
+    # Use IP address as a temporary identifier for the session
     username = addr[0]
-    client_socket.send("Welcome to AlphaBank. Please type LOGIN to log in! \n".encode())
+    
+    # Prompt user to log in upon connection
+    client_socket.send("Welcome to AlphaBank. Please type LOGIN <username> <password> to log in!\n".encode())
     
     while True:
-        data = client_socket.recv(1024)
-        if not data:
-            break
-        command = data.decode().strip()
-        response = handle_command(command, client_socket, username)
-        client_socket.send(response.encode())
-    
+        try:
+            # Receive command from the client
+            data = client_socket.recv(1024)
+            if not data:
+                break  # Connection closed by client
+            
+            # Decode and strip the command
+            command = data.decode().strip()
+            
+            # Process the command
+            response = handle_command(command, client_socket, username)
+            
+            # Send the response back to the client
+            client_socket.send(response.encode())
+        
+        except Exception as e:
+            print(f"Error handling client {addr}: {e}")
+            break  # Exit loop if there's an error with the client connection
+
+    # Clean up connection
     client_socket.close()
+    print(f"Connection closed for {addr}")
 
 def start_server():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind(("0.0.0.0", 6201))
+    server.bind(("localhost", 5555))
     server.listen(5)
-    print("Server started on port 6201")
-    
+    print("Server started on port 5555...")
+
     while True:
         client_socket, addr = server.accept()
-        print(f"Connection from {addr}")
+        print(f"Connection established with {addr}")
         client_handler = threading.Thread(target=handle_client, args=(client_socket, addr))
         client_handler.start()
 
